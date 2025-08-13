@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Galaxy Grabber — Python in the Browser</title>
+  <!-- PyScript -->
+  <link rel="stylesheet" href="https://pyscript.net/releases/2024.9.1/core.css">
+  <script type="module" src="https://pyscript.net/releases/2024.9.1/core.js"></script>
+  <style>
+    html, body { margin:0; padding:0; background: radial-gradient(ellipse at center, #05070d 0%, #02030a 60%, #000 100%); height:100%; overflow:hidden; }
+    #hud { position: fixed; left: 16px; top: 12px; color: #cfe8ff; font: 600 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif; text-shadow: 0 0 8px rgba(83,179,255,.35); z-index: 5; }
+    #hud .title { font-weight: 800; letter-spacing: .5px; margin-bottom: 4px; }
+    #hud .row { opacity: .9; }
+    #hud .pill { display:inline-block; border:1px solid rgba(173,216,230,.3); padding:4px 8px; border-radius:999px; margin-top:6px; font-size:12px; opacity:.9 }
+    canvas { display:block; width:100vw; height:100vh; }
+    #footer { position:fixed; right: 12px; bottom: 12px; color:#9ecaff; font: 12px/1.2 system-ui; opacity:.8 }
+    a { color:#cfe8ff; }
+  </style>
+</head>
+<body>
+  <!-- HUD -->
+  <div id="hud">
+    <div class="title">🌌 Galaxy Grabber</div>
+    <div class="row">Score: <span id="score">0</span> | Missed: <span id="missed">0</span></div>
+    <div class="row">Best: <span id="best">0</span></div>
+    <div class="pill">Move your mouse / touch to steer the hand. Catch the falling letters!</div>
+  </div>
+
+  <!-- Game Canvas -->
+  <canvas id="game"></canvas>
+  <div id="footer">Made with PyScript (Python in the browser)</div>
+
+  <!-- Background Music -->
+  <audio id="bgmusic" loop autoplay>
+    <source src="https://cdn.pixabay.com/download/audio/2022/03/15/audio_3e444b9d23.mp3?filename=space-ambient-110624.mp3" type="audio/mpeg">
+  </audio>
+
+  <!-- Catch Sound -->
+  <audio id="catchsound">
+    <source src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_0e050b35b5.mp3?filename=click-21156.mp3" type="audio/mpeg">
+  </audio>
+
+  <py-config>
+    packages = []
+  </py-config>
+
+  <py-script>
+from js import document, window
+from pyodide.ffi import create_proxy
+from math import sin, cos, pi
+import random
+import time
+
+# Audio elements
+bg_music = document.getElementById("bgmusic")
+catch_sound = document.getElementById("catchsound")
+
+# Ensure background music plays
+bg_music.volume = 0.5
+bg_music.play().catch(lambda e: None)
+
+canvas = document.getElementById("game")
+ctx = canvas.getContext("2d")
+
+def resize(*args):
+    canvas.width = window.innerWidth
+    canvas.height = window.innerHeight
+
+resize_proxy = create_proxy(resize)
+window.addEventListener("resize", resize_proxy)
+resize()
+
+hud_score = document.getElementById("score")
+hud_missed = document.getElementById("missed")
+hud_best = document.getElementById("best")
+
+letters = []
+stars = []
+score = 0
+missed = 0
+best = 0
+
+hand_x = canvas.width / 2
+hand_y = canvas.height * 0.82
+hand_open = 1.0
+grab_timer = 0
+
+spawn_interval = 48
+speed_min = 1.5
+speed_max = 3.8
+frame = 0
+
+def on_move(e):
+    global hand_x, hand_y
+    if hasattr(e, "touches") and e.touches.length > 0:
+        t = e.touches[0]
+        hand_x = t.clientX
+        hand_y = t.clientY
+    else:
+        hand_x = e.clientX
+        hand_y = e.clientY
+
+on_move_proxy = create_proxy(on_move)
+window.addEventListener("mousemove", on_move_proxy)
+window.addEventListener("touchmove", on_move_proxy)
+
+for i in range(200):
+    stars.append({
+        "x": random.random(),
+        "y": random.random(),
+        "z": random.choice([0.2, 0.4, 0.7, 1.0])
+    })
+
+def draw_stars():
+    w, h = canvas.width, canvas.height
+    for s in stars:
+        x = int(s["x"] * w)
+        y = int(s["y"] * h)
+        size = s["z"] * 1.8 + 0.2
+        ctx.globalAlpha = 0.3 + 0.7 * s["z"]
+        ctx.fillStyle = "#b9d8ff"
+        ctx.fillRect(x, y, size, size)
+    ctx.globalAlpha = 1.0
+
+class Letter:
+    def __init__(self):
+        w = canvas.width
+        self.x = random.uniform(20, w-20)
+        self.y = -40
+        self.speed = random.uniform(speed_min, speed_max)
+        self.ch = chr(random.randint(65, 90))
+        self.size = random.uniform(24, 44)
+        self.spin = random.uniform(-0.03, 0.03)
+        self.angle = random.uniform(0, 2*pi)
+
+    def update(self):
+        self.y += self.speed
+        self.angle += self.spin
+
+    def draw(self):
+        ctx.save()
+        ctx.translate(self.x, self.y)
+        ctx.rotate(self.angle)
+        ctx.font = f"{self.size}px system-ui, Segoe UI, Roboto, sans-serif"
+        ctx.fillStyle = "#cfe8ff"
+        ctx.textAlign = "center"
+        ctx.textBaseline = "middle"
+        ctx.shadowColor = "rgba(130,180,255,0.6)"
+        ctx.shadowBlur = 12
+        ctx.fillText(self.ch, 0, 0)
+        ctx.restore()
+
+def spawn_letter():
+    letters.append(Letter())
+
+def draw_hand(open_amt: float):
+    ctx.save()
+    ctx.translate(hand_x, hand_y)
+    scale = max(0.8, min(1.4, canvas.width / 1200))
+    ctx.scale(scale, scale)
+
+    grad = ctx.createRadialGradient(0, 0, 5, 0, 0, 80)
+    grad.addColorStop(0, "rgba(120,170,255,0.4)")
+    grad.addColorStop(1, "rgba(120,170,255,0.0)")
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.arc(0, 0, 80, 0, 2*pi)
+    ctx.fill()
+
+    ctx.fillStyle = "#9ecaff"
+    ctx.strokeStyle = "#cfe8ff"
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(-26, 20)
+    ctx.quadraticCurveTo(-30, -10, -8, -26)
+    ctx.quadraticCurveTo(20, -40, 32, -18)
+    ctx.quadraticCurveTo(40,  12, 12, 28)
+    ctx.quadraticCurveTo(-8,  36, -26, 20)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    finger_len = 28 + 6 * open_amt
+    for i, dx in enumerate([-22, -8, 6, 20]):
+        ang = -pi/2 + (i-1.5)*0.1
+        tipx = dx + finger_len * cos(ang)
+        tipy = -6 + finger_len * sin(ang)
+        ctx.beginPath()
+        ctx.moveTo(dx, -6)
+        ctx.lineTo(tipx, tipy)
+        ctx.stroke()
+
+    ctx.fillStyle = "#7ab1ff"
+    ctx.fillRect(-18, 30, 36, 12)
+    ctx.restore()
+
+def clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+def check_collision(letter: Letter):
+    r = 34
+    dx = letter.x - hand_x
+    dy = letter.y - hand_y
+    return dx*dx + dy*dy <= r*r
+
+def loop(*args):
+    global frame, score, missed, best, hand_open, grab_timer, spawn_interval, speed_min, speed_max
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    draw_stars()
+
+    if frame % spawn_interval == 0:
+        spawn_letter()
+
+    to_remove = []
+    for i, L in enumerate(letters):
+        L.update()
+        L.draw()
+        if L.y - 40 > canvas.height:
+            to_remove.append(i)
+            missed += 1
+    for i in reversed(to_remove):
+        letters.pop(i)
+
+    if grab_timer > 0:
+        grab_timer -= 1
+        hand_open = clamp(hand_open - 0.08, 0.0, 1.0)
+    else:
+        hand_open = clamp(hand_open + 0.04, 0.0, 1.0)
+
+    to_remove = []
+    for i, L in enumerate(letters):
+        if check_collision(L):
+            to_remove.append(i)
+            score += 1
+            best = max(best, score)
+            grab_timer = 10
+            catch_sound.currentTime = 0
+            catch_sound.play().catch(lambda e: None)
+    for i in reversed(to_remove):
+        letters.pop(i)
+
+    if frame % 240 == 0 and frame > 0:
+        spawn_interval = max(22, spawn_interval - 2)
+        speed_min = min(3.5, speed_min + 0.05)
+        speed_max = min(6.0, speed_max + 0.08)
+
+    draw_hand(hand_open)
+
+    hud_score.innerText = str(score)
+    hud_missed.innerText = str(missed)
+    hud_best.innerText = str(best)
+
+    frame += 1
+    window.requestAnimationFrame(loop_proxy)
+
+loop_proxy = create_proxy(loop)
+window.requestAnimationFrame(loop_proxy)
+  </py-script>
+</body>
+</html>
