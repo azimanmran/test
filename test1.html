@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Galaxy Alphabet Catcher — Hand Tracked</title>
+  <style>
+    :root{
+      --bg:#050816; --panel:#0b1028; --accent:#7aa2ff; --accent2:#e499ff; --good:#53d86a; --bad:#ff6b6b; --txt:#e6ecff;
+    }
+    html,body{height:100%; margin:0; background:radial-gradient(1200px 800px at 20% 10%, #0b1028 0%, #050816 60%, #02040a 100%); color:var(--txt); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";}
+    .wrap{display:grid; grid-template-columns: 1fr 360px; gap:16px; height:100%;}
+    .left{position:relative;}
+    #game{width:100%; height:100%; display:block;}
+    .panel{background:linear-gradient(180deg, rgba(122,162,255,.12), rgba(228,153,255,.06)),
+           linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0));
+      border:1px solid rgba(122,162,255,.25); border-radius:16px; margin:16px; padding:16px; box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+    .row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:10px 0}
+    .btn{cursor:pointer; background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:white; padding:10px 14px; border-radius:12px; font-weight:700; letter-spacing:.3px; box-shadow:0 10px 20px rgba(122,162,255,.25);} 
+    .btn:disabled{opacity:.5; cursor:not-allowed}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+    .meter{height:10px; background:#121633; border-radius:999px; overflow:hidden; border:1px solid rgba(122,162,255,.3)}
+    .meter>i{display:block; height:100%; width:0%; background:linear-gradient(90deg, var(--good), var(--accent));}
+    .tiny{opacity:.7; font-size:12px}
+    .pill{padding:4px 8px; background:#10163b; border:1px solid rgba(122,162,255,.3); border-radius:999px}
+    .banner{position:absolute; inset:0; display:grid; place-items:center; pointer-events:none}
+    .banner .card{pointer-events:auto; text-align:center; background:var(--panel); border:1px solid rgba(122,162,255,.35); border-radius:18px; padding:22px 20px; box-shadow:0 20px 80px rgba(0,0,0,.45)}
+    .stars{position:absolute; inset:0; pointer-events:none}
+    /* hide raw video, but keep for MediaPipe input */
+    #cam{position:absolute; right:12px; bottom:12px; width:180px; height:auto; border-radius:12px; border:1px solid rgba(255,255,255,.2); opacity:.25}
+  </style>
+  <!-- PyScript (Python-in-the-browser) -->
+  <link rel="stylesheet" href="https://pyscript.net/latest/pyscript.css" />
+  <script defer src="https://pyscript.net/latest/pyscript.js"></script>
+  <!-- MediaPipe Hands + camera utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="left">
+      <canvas id="game"></canvas>
+      <canvas class="stars" id="stars"></canvas>
+      <video id="cam" playsinline muted></video>
+
+      <div class="banner" id="overlay">
+        <div class="card">
+          <h2>🪐 Galaxy Alphabet Catcher</h2>
+          <p>Move your hand under dropping letters to catch them. The hand is tracked via your webcam (index finger tip).
+          </p>
+          <div class="tiny" style="margin-bottom:10px">Grant camera permission when prompted.</div>
+          <button class="btn" id="startBtn">Start</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <div class="row"><strong>Score</strong><span class="pill" id="score">0</span></div>
+      <div class="row"><strong>Misses</strong><span class="pill" id="misses">0</span></div>
+      <div class="row"><strong>Target</strong><span class="pill" id="target">10</span></div>
+      <div class="row"><strong>Level</strong><span class="pill" id="level">1</span></div>
+      <div class="row"><strong>FPS (proc)</strong><span class="pill" id="pfps">0</span></div>
+      <div class="row"><strong>Hand</strong><span class="tiny" id="handState">—</span></div>
+      <div class="row"><button class="btn" id="resetBtn" disabled>Reset</button></div>
+      <p class="tiny">Tips:
+        <br>• Your <b>index fingertip</b> controls the catcher.
+        <br>• Letters speed up each level.
+        <br>• Catch <span class="mono">target</span> letters to win; miss 5 and it's game over.
+      </p>
+    </aside>
+  </div>
+
+  <py-script>
+from js import document, window
+import math, random, time, asyncio
+
+# ====== Canvas setup ======
+canvas = document.getElementById('game')
+stars = document.getElementById('stars')
+ctx = canvas.getContext('2d')
+sctx = stars.getContext('2d')
+
+# Resize canvases to fill area
+
+def fit():
+    rect = canvas.parentElement.getBoundingClientRect()
+    canvas.width = int(rect.width)
+    canvas.height = int(rect.height)
+    stars.width = canvas.width
+    stars.height = canvas.height
+
+fit()
+
+def on_resize(event):
+    fit()
+
+window.addEventListener('resize', on_resize)
+
+# ====== Starfield background ======
+star_pts = []
+for _ in range(180):
+    star_pts.append({
+        'x': random.random(),
+        'y': random.random(),
+        'z': random.random()*1.0 + 0.3,
+        'tw': random.random()*2*math.pi
+    })
+
+def draw_stars(dt):
+    sctx.clearRect(0,0,stars.width, stars.height)
+    for st in star_pts:
+        st['tw'] += dt*0.002
+        alp = 0.35 + 0.35*math.sin(st['tw'])
+        r = st['z']*1.6 + 0.3
+        sctx.globalAlpha = alp
+        sctx.beginPath()
+        sctx.arc(st['x']*stars.width, st['y']*stars.height, r, 0, math.tau)
+        sctx.fillStyle = '#cfe2ff'
+        sctx.fill()
+    sctx.globalAlpha = 1
+
+# ====== Game state ======
+class Letter:
+    def __init__(self, ch, x, y, vy):
+        self.ch = ch
+        self.x = x
+        self.y = y
+        self.vy = vy
+        self.caught = False
+
+letters = []
+score = 0
+misses = 0
+level = 1
+speed_base = 90.0 # px/s
+spawn_interval = 0.9 # s
+last_spawn = 0.0
+running = False
+won = False
+lost = False
+
+# Hand state (from JS — updated on every frame)
+# window.handPos = { 'ok': bool, 'x': 0..1, 'y': 0..1 }
+
+# Convenience DOM handles
+lbl_score = document.getElementById('score')
+lbl_miss = document.getElementById('misses')
+lbl_lvl = document.getElementById('level')
+lbl_target = document.getElementById('target')
+lbl_hand = document.getElementById('handState')
+lbl_pfps = document.getElementById('pfps')
+
+TARGET = 10
+lbl_target.textContent = str(TARGET)
+
+catcher_radius = 42 # visual radius
+
+emoji_hand = '🖐️'
+
+# ====== Helpers ======
+ALPH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+def spawn_letter():
+    ch = random.choice(ALPH)
+    x = random.randint(30, canvas.width-30)
+    y = -30
+    vy = speed_base + (level-1)*35 + random.random()*30
+    letters.append(Letter(ch, x, y, vy))
+
+# ====== Draw ======
+
+def draw(dt):
+    ctx.clearRect(0,0,canvas.width, canvas.height)
+
+    # draw letters
+    ctx.font = '700 42px ui-sans-serif, system-ui, Segoe UI, Roboto'
+    for L in letters:
+        ctx.globalAlpha = 1.0
+        ctx.fillStyle = '#e6ecff'
+        ctx.fillText(L.ch, L.x, L.y)
+
+    # draw catcher (hand emoji at handPos)
+    hp = window.handPos if hasattr(window, 'handPos') else None
+    if hp and hp.ok:
+        cx = int(hp.x * canvas.width)
+        cy = int(hp.y * canvas.height)
+        ctx.font = '64px "Segoe UI Emoji", Apple Color Emoji, Noto Color Emoji'
+        ctx.fillText(emoji_hand, cx-28, cy+24)
+        # subtle aura
+        ctx.beginPath()
+        ctx.arc(cx, cy, catcher_radius, 0, math.tau)
+        ctx.strokeStyle = 'rgba(122,162,255,.35)'
+        ctx.lineWidth = 2
+        ctx.stroke()
+
+# ====== Update ======
+
+def update(dt):
+    global last_spawn, score, misses, level, running, won, lost
+    if not running:
+        return
+
+    last_spawn += dt
+    # spawn letters
+    if last_spawn >= spawn_interval:
+        last_spawn = 0
+        spawn_letter()
+
+    # move letters
+    for L in letters:
+        L.y += L.vy * dt
+
+    # hand collide
+    hp = window.handPos if hasattr(window, 'handPos') else None
+    if hp and hp.ok:
+        cx = int(hp.x * canvas.width)
+        cy = int(hp.y * canvas.height)
+        for L in letters:
+            if not L.caught:
+                # distance from letter glyph approx using its anchor bottom-left -> offset to center
+                dx = (L.x+12) - cx
+                dy = (L.y-24) - cy
+                if dx*dx + dy*dy <= (catcher_radius*catcher_radius):
+                    L.caught = True
+                    score += 1
+
+    # remove offscreen & caught
+    alive = []
+    for L in letters:
+        if L.caught:
+            continue
+        if L.y > canvas.height + 50:
+            misses += 1
+            continue
+        alive.append(L)
+    letters[:] = alive
+
+    # leveling & end states
+    if score >= TARGET:
+        running = False
+        won = True
+    if misses >= 5:
+        running = False
+        lost = True
+
+    # UI
+    lbl_score.textContent = str(score)
+    lbl_miss.textContent = str(misses)
+    lbl_lvl.textContent = str(level)
+
+# ====== Game Loop ======
+async def game_loop():
+    global running, won, lost
+    overlay = document.getElementById('overlay')
+    resetBtn = document.getElementById('resetBtn')
+
+    # Wait for start (JS sets window._gameStart)
+    while not getattr(window, '_gameStart', False):
+        await asyncio.sleep(0.05)
+
+    running = True
+    overlay.style.display = 'none'
+    resetBtn.disabled = False
+
+    prev = time.time()
+    pfps_clock = 0
+    pfps_count = 0
+
+    while True:
+        now = time.time()
+        dt = max(0.0, min(0.05, now - prev))
+        prev = now
+        pfps_clock += dt
+        pfps_count += 1
+        if pfps_clock >= 0.5:
+            lbl_pfps.textContent = str(int(pfps_count / pfps_clock))
+            pfps_clock = 0
+            pfps_count = 0
+
+        draw_stars(dt)
+        update(dt)
+        draw(dt)
+        if won or lost:
+            break
+        await asyncio.sleep(0)
+
+    # show end
+    overlay.style.display = 'grid'
+    card = overlay.querySelector('.card')
+    msg = '🎉 You win! Great catching.' if won else '💥 Game over — try again.'
+    card.innerHTML = f"<h2>{msg}</h2><p>Score: <b>{score}</b> | Misses: <b>{misses}</b></p><button class='btn' id='startBtn2'>Play again</button>"
+    def _restart(evt):
+        window.location.reload()
+    overlay.querySelector('#startBtn2').addEventListener('click', _restart)
+
+asyncio.ensure_future(game_loop())
+  </py-script>
+
+  <script>
+    // ====== MediaPipe Hands setup (client-side tracking) ======
+    const videoEl = document.getElementById('cam');
+    const lblHand = document.getElementById('handState');
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    window.handPos = { ok:false, x:0.5, y:0.8 };
+    window._gameStart = false;
+
+    let camera = null;
+
+    function onResults(results){
+      if(results.multiHandLandmarks && results.multiHandLandmarks.length){
+        const lm = results.multiHandLandmarks[0]; // first hand
+        // Index fingertip landmark id 8
+        const tip = lm[8];
+        window.handPos.ok = true;
+        window.handPos.x = tip.x; // normalized 0..1
+        window.handPos.y = tip.y; // normalized 0..1
+        lblHand.textContent = `tracking (x=${tip.x.toFixed(2)}, y=${tip.y.toFixed(2)})`;
+      }else{
+        window.handPos.ok = false;
+        lblHand.textContent = 'no hand';
+      }
+    }
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 0,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+    hands.onResults(onResults);
+
+    async function startCamera(){
+      const stream = await navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480}});
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      camera = new Camera(videoEl, { onFrame: async () => { await hands.send({image: videoEl}); }, width: 640, height: 480 });
+      camera.start();
+    }
+
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      await startCamera();
+      window._gameStart = true;
+    });
+
+    resetBtn.addEventListener('click', () => { window.location.reload(); });
+
+    // ====== Canvas sizing on load ======
+    const game = document.getElementById('game');
+    function sizeCanvas(){
+      const rect = game.parentElement.getBoundingClientRect();
+      game.width = rect.width;
+      game.height = rect.height;
+    }
+    sizeCanvas();
+    window.addEventListener('resize', sizeCanvas);
+  </script>
+</body>
+</html>
