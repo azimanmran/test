@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Galaxy Grabber — Game Over on Number</title>
+  <title>JimeBiso</title>
   <link rel="stylesheet" href="https://pyscript.net/releases/2024.9.1/core.css">
   <script type="module" src="https://pyscript.net/releases/2024.9.1/core.js"></script>
   <style>
@@ -22,6 +22,29 @@
     }
     #gameover h1 { font-size:3em; margin-bottom:20px; }
     #gameover button { padding:10px 20px; font-size:1.2em; background:#9ecaff; border:none; border-radius:6px; cursor:pointer; }
+    /* Popup for caught letter */
+    #letterpopup {
+      display:none;
+      position:fixed;
+      top:50%; left:50%;
+      transform:translate(-50%, -50%);
+      font-size:5em;
+      font-weight:bold;
+      color:#fff;
+      text-shadow:0 0 20px rgba(255,255,255,0.8), 0 0 40px rgba(83,179,255,0.8);
+      z-index:9;
+      animation: popupfade 1s ease forwards;
+    }
+    @keyframes popupfade {
+        0% { opacity:1; transform:translate(-50%, -50%) scale(1); }
+        80% { opacity:1; transform:translate(-50%, -50%) scale(1.2); }
+        100% { opacity:0; transform:translate(-50%, -50%) scale(1.5); }
+    }
+    #letterpopup {
+        /* ...existing styles... */
+        animation: popupfade 2.5s ease forwards; /* was 1s */
+    }
+
   </style>
 </head>
 <body>
@@ -32,7 +55,7 @@
   </div>
 
   <canvas id="game"></canvas>
-  <!-- <div id="footer">Made with PyScript (Python in the browser)</div> -->
+  <div id="letterpopup"></div>
 
   <div id="gameover">
     <h1>Game Over!</h1>
@@ -72,6 +95,7 @@ hud_best = document.getElementById("best")
 overlay = document.getElementById("gameover")
 final_score = document.getElementById("finalscore")
 restart_btn = document.getElementById("restart")
+popup = document.getElementById("letterpopup")
 
 game_over = False
 
@@ -182,12 +206,22 @@ def check_collision(letter):
     dy = letter.y - hand_y
     return dx*dx + dy*dy <= r*r
 
+def show_popup(letter):
+    popup.innerText = letter
+    popup.style.display = "block"
+    popup_clone = popup.cloneNode(True)
+    popup.parentNode.replaceChild(popup_clone, popup)
+    globals()["popup"] = popup_clone
+    window.setTimeout(lambda: setattr(popup_clone.style, "display", "none"), 2500)  # was 1000
+
 def trigger_game_over():
     global game_over
     game_over = True
     bg_music.pause()
     overlay.style.display = "flex"
     final_score.innerText = str(score)
+    gameover_sound.currentTime = 0
+    gameover_sound.play().catch(lambda e: None)
 
 def restart_game(event=None):
     global score, missed, frame, spawn_interval, speed_min, speed_max, letters, game_over
@@ -239,6 +273,7 @@ def loop(*args):
             grab_timer = 10
             catch_sound.currentTime = 0
             catch_sound.play().catch(lambda e: None)
+            show_popup(L.ch)
     for i in reversed(to_remove):
         letters.pop(i)
     if frame % 240 == 0 and frame > 0:
